@@ -1,0 +1,19 @@
+{
+  "name": "opencode-autocontinue",
+  "version": "0.1.0",
+  "description": "OpenCode plugin for /autocontinue duration-based auto follow-up",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "keywords": [
+    "opencode",
+    "plugin",
+    "autocontinue"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.3.17"
+  }
+}

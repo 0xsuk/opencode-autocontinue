@@ -9,10 +9,6 @@ type AutoContinueState = {
 const COMMAND_NAME = "autocontinue"
 const CONTINUE_TEXT = "つづけて"
 
-function isAutoContinueCommand(command: string): boolean {
-  return command === COMMAND_NAME || command === `/${COMMAND_NAME}`
-}
-
 const UNIT_TO_MS: Record<string, number> = {
   ms: 1,
   s: 1000,
@@ -54,13 +50,37 @@ function parseDurationToMs(raw: string): number | null {
   if (total > 0) {
     const compactInput = input.replace(/\s+/g, "")
     const compactConsumed = consumed.replace(/\s+/g, "")
-    if (compactInput === compactConsumed) {
+    if (compactInput === compactConsumed || compactInput.startsWith(compactConsumed)) {
       return Math.floor(total)
     }
   }
 
   if (/^\d+$/.test(input)) {
     return Number(input) * 60_000
+  }
+
+  return null
+}
+
+function splitDurationAndRemainder(raw: string): { durationMs: number; remainder: string } | null {
+  const input = raw.trim()
+  if (!input) return null
+
+  const tokenPattern = "(?:ms|s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)"
+  const durationPrefix = new RegExp(`^\\s*((?:\\d+(?:\\.\\d+)?\\s*${tokenPattern}\\s*)+)(.*)$`, "i")
+  const matched = input.match(durationPrefix)
+  if (matched) {
+    const durationPart = matched[1].trim()
+    const remainder = (matched[2] ?? "").trim()
+    const durationMs = parseDurationToMs(durationPart)
+    if (durationMs) return { durationMs, remainder }
+  }
+
+  const numericPrefix = input.match(/^\s*(\d+)(?:\s+(.*))?$/)
+  if (numericPrefix) {
+    const durationMs = Number(numericPrefix[1]) * 60_000
+    const remainder = (numericPrefix[2] ?? "").trim()
+    if (durationMs > 0) return { durationMs, remainder }
   }
 
   return null
@@ -109,12 +129,97 @@ export const Autocontinue: Plugin = async ({ client }) => {
 
   return {
     "command.execute.before": async (input, output) => {
-      if (!isAutoContinueCommand(input.command)) return
-      output.parts = []
+      if (input.command !== COMMAND_NAME) return
+
+      const parsed = splitDurationAndRemainder(input.arguments ?? "")
+      if (parsed) {
+        const baseText = `${formatDuration(parsed.durationMs)}稼働しつづけて`
+        const commandText = parsed.remainder ? `${baseText} ${parsed.remainder}` : baseText
+
+        await client.session.promptAsync({
+          path: { id: input.sessionID },
+          body: {
+            noReply: true,
+            parts: [
+              {
+                type: "text",
+                text: commandText,
+              },
+            ],
+          },
+        })
+
+        if (output.parts.length > 0 && output.parts[0]?.type === "text") {
+          ;(output.parts[0] as { text?: string }).text = commandText
+          output.parts = output.parts.slice(0, 1)
+        } else {
+          output.parts = [{ type: "text", text: commandText } as never]
+        }
+      } else {
+        output.parts = []
+      }
+
       await startAutoContinue(input.sessionID, input.arguments ?? "")
     },
 
     event: async ({ event }) => {
+      if (event.type === "session.error") {
+        const err = event.properties.error
+        if (!err) return
+
+        const isInterruptLike =
+          err.name === "MessageAbortedError" ||
+          (err.name === "APIError" && /abort|cancel|interrupt|stopped/i.test(err.data?.message ?? ""))
+        if (!isInterruptLike) return
+
+        const sessionID = event.properties.sessionID
+        if (sessionID) {
+          const state = stateBySession.get(sessionID)
+          if (!state) return
+
+          stateBySession.delete(sessionID)
+          await client.tui.showToast({
+            body: {
+              title: "autocontinue stopped",
+              message: `セッション中断を検知したため自動継続を停止しました（${formatDuration(state.durationMs)}）。`,
+              variant: "info",
+              duration: 2500,
+            },
+          })
+          return
+        }
+
+        for (const [activeSessionID, state] of stateBySession) {
+          stateBySession.delete(activeSessionID)
+          await client.tui.showToast({
+            body: {
+              title: "autocontinue stopped",
+              message: `セッション中断を検知したため自動継続を停止しました（${formatDuration(state.durationMs)}）。`,
+              variant: "info",
+              duration: 2500,
+            },
+          })
+        }
+        return
+      }
+
+      if (event.type === "tui.command.execute") {
+        if (event.properties.command !== "session.interrupt") return
+
+        for (const [sessionID, state] of stateBySession) {
+          stateBySession.delete(sessionID)
+          await client.tui.showToast({
+            body: {
+              title: "autocontinue stopped",
+              message: `割り込み操作を検知したため自動継続を停止しました（${formatDuration(state.durationMs)}）。`,
+              variant: "info",
+              duration: 2500,
+            },
+          })
+        }
+        return
+      }
+
       if (event.type !== "session.idle") return
 
       const { sessionID } = event.properties

@@ -72,44 +72,45 @@ function formatDuration(durationMs: number): string {
 export const Autocontinue: Plugin = async ({ client }) => {
   const stateBySession = new Map<string, AutoContinueState>()
 
+  const startAutoContinue = async (sessionID: string, args: string) => {
+    const parsed = parseDurationToMs(args ?? "")
+    if (!parsed) {
+      await client.tui.showToast({
+        body: {
+          title: "autocontinue",
+          message: "時間指定を解釈できませんでした。例: /autocontinue 30s",
+          variant: "warning",
+          duration: 3000,
+        },
+      })
+      return
+    }
+
+    const now = Date.now()
+    stateBySession.set(sessionID, {
+      deadlineAt: now + parsed,
+      durationMs: parsed,
+      sending: false,
+    })
+
+    await client.tui.showToast({
+      body: {
+        title: "autocontinue observed",
+        message: `/autocontinue ${args} を観測。${formatDuration(parsed)} の間、自動で「${CONTINUE_TEXT}」を送信します。`,
+        variant: "success",
+        duration: 3500,
+      },
+    })
+  }
+
   return {
+    "command.execute.before": async (input, output) => {
+      if (input.command !== COMMAND_NAME) return
+      output.parts = []
+      await startAutoContinue(input.sessionID, input.arguments)
+    },
+
     event: async ({ event }) => {
-      if (event.type === "command.executed") {
-        const { name, sessionID, arguments: args } = event.properties
-        if (name !== COMMAND_NAME) return
-
-        const parsed = parseDurationToMs(args ?? "")
-        if (!parsed) {
-          await client.tui.showToast({
-            body: {
-              title: "autocontinue",
-              message: "時間指定を解釈できませんでした。例: /autocontinue 30s",
-              variant: "warning",
-              duration: 3000,
-            },
-          })
-          return
-        }
-
-        const now = Date.now()
-        stateBySession.set(sessionID, {
-          deadlineAt: now + parsed,
-          durationMs: parsed,
-          sending: false,
-        })
-
-        await client.tui.showToast({
-          body: {
-            title: "autocontinue observed",
-            message: `/autocontinue ${args} を観測。${formatDuration(parsed)} の間、自動で「${CONTINUE_TEXT}」を送信します。`,
-            variant: "success",
-            duration: 3500,
-          },
-        })
-
-        return
-      }
-
       if (event.type !== "session.idle") return
 
       const { sessionID } = event.properties

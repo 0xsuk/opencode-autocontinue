@@ -25,7 +25,7 @@ It also shows a TUI toast as soon as `/autocontinue ...` is observed.
 
 ## Usage in OpenCode config
 
-Add this plugin and command configuration in your `opencode.json`:
+Add this plugin in your `opencode.json`:
 
 ```json
 {

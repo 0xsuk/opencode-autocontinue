@@ -6,50 +6,11 @@ type AutoContinueState = {
   sending: boolean
 }
 
-type PendingState = {
-  consumed: boolean
-}
-
 const COMMAND_NAME = "autocontinue"
 const CONTINUE_TEXT = "つづけて"
 
 function isAutoContinueCommand(command: string): boolean {
   return command === COMMAND_NAME || command === `/${COMMAND_NAME}`
-}
-
-function parseCommandText(text: string): string | null {
-  const trimmed = text.trim()
-
-  let normalized = trimmed
-  if (
-    (normalized.startsWith('"') && normalized.endsWith('"')) ||
-    (normalized.startsWith("'") && normalized.endsWith("'"))
-  ) {
-    normalized = normalized.slice(1, -1).trim()
-  }
-
-  if (normalized === `/${COMMAND_NAME}` || normalized === COMMAND_NAME) return ""
-  if (normalized.startsWith(`/${COMMAND_NAME} `)) {
-    return normalized.slice(COMMAND_NAME.length + 2).trim()
-  }
-  if (normalized.startsWith(`${COMMAND_NAME} `)) {
-    return normalized.slice(COMMAND_NAME.length + 1).trim()
-  }
-  return null
-}
-
-function parseAutoContinueFromParts(parts: Array<{ type?: string; text?: string }>): string | null {
-  if (parts.length !== 1) return null
-  const part = parts[0]
-  if (part.type !== "text" || typeof part.text !== "string") return null
-  return parseCommandText(part.text)
-}
-
-function isInjectedTemplateText(parts: Array<{ type?: string; text?: string }>): boolean {
-  if (parts.length !== 1) return false
-  const part = parts[0]
-  if (part.type !== "text" || typeof part.text !== "string") return false
-  return part.text.includes("This /autocontinue command is handled by a plugin")
 }
 
 const UNIT_TO_MS: Record<string, number> = {
@@ -114,7 +75,6 @@ function formatDuration(durationMs: number): string {
 
 export const Autocontinue: Plugin = async ({ client }) => {
   const stateBySession = new Map<string, AutoContinueState>()
-  const pendingBySession = new Map<string, PendingState>()
 
   const startAutoContinue = async (sessionID: string, args: string) => {
     const parsed = parseDurationToMs(args ?? "")
@@ -148,39 +108,13 @@ export const Autocontinue: Plugin = async ({ client }) => {
   }
 
   return {
-    "chat.message": async (input, output) => {
-      if (isInjectedTemplateText(output.parts as Array<{ type?: string; text?: string }>)) {
-        output.parts = []
-        return
-      }
-
-      const args = parseAutoContinueFromParts(output.parts as Array<{ type?: string; text?: string }>)
-      if (args === null) return
-
-      output.parts = []
-      pendingBySession.set(input.sessionID, { consumed: true })
-      await startAutoContinue(input.sessionID, args)
-    },
-
     "command.execute.before": async (input, output) => {
       if (!isAutoContinueCommand(input.command)) return
       output.parts = []
-      pendingBySession.set(input.sessionID, { consumed: false })
-      await startAutoContinue(input.sessionID, input.arguments)
+      await startAutoContinue(input.sessionID, input.arguments ?? "")
     },
 
     event: async ({ event }) => {
-      if (event.type === "command.executed") {
-        const { name, sessionID } = event.properties
-        if (!isAutoContinueCommand(name)) return
-
-        const pending = pendingBySession.get(sessionID)
-        if (pending && !pending.consumed) {
-          pending.consumed = true
-          return
-        }
-      }
-
       if (event.type !== "session.idle") return
 
       const { sessionID } = event.properties

@@ -4,6 +4,9 @@ type AutoContinueState = {
   deadlineAt: number
   durationMs: number
   sending: boolean
+  stopped: boolean
+  originalTitle?: string
+  titleTicker?: ReturnType<typeof setInterval>
 }
 
 const COMMAND_NAME = "autocontinue"
@@ -93,8 +96,113 @@ function formatDuration(durationMs: number): string {
   return `${durationMs}ms`
 }
 
+function formatRemaining(durationMs: number): string {
+  const clamped = Math.max(0, Math.ceil(durationMs / 1000))
+  const hours = Math.floor(clamped / 3600)
+  const minutes = Math.floor((clamped % 3600) / 60)
+  const seconds = clamped % 60
+
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+  return `${minutes}:${String(seconds).padStart(2, "0")}`
+}
+
 export const Autocontinue: Plugin = async ({ client }) => {
   const stateBySession = new Map<string, AutoContinueState>()
+
+  const getSessionTitle = async (sessionID: string): Promise<string | undefined> => {
+    const sessionClient = (client as any).session
+    if (!sessionClient) return undefined
+
+    const getters = [sessionClient.getAsync?.bind(sessionClient), sessionClient.get?.bind(sessionClient)].filter(Boolean)
+
+    for (const get of getters) {
+      try {
+        const result = await get({ path: { id: sessionID } })
+        if (typeof result?.title === "string") return result.title
+        if (typeof result?.data?.title === "string") return result.data.title
+        if (typeof result?.info?.title === "string") return result.info.title
+      } catch {
+        continue
+      }
+    }
+
+    return undefined
+  }
+
+  const setSessionTitle = async (sessionID: string, title: string): Promise<boolean> => {
+    const sessionClient = (client as any).session
+    if (!sessionClient) return false
+
+    const updaters = [sessionClient.updateAsync?.bind(sessionClient), sessionClient.update?.bind(sessionClient)].filter(Boolean)
+
+    for (const update of updaters) {
+      try {
+        await update({ path: { id: sessionID }, body: { title } })
+        return true
+      } catch {
+        continue
+      }
+    }
+
+    return false
+  }
+
+  const stopSessionTitleTicker = (sessionID: string) => {
+    const state = stateBySession.get(sessionID)
+    if (!state?.titleTicker) return
+    clearInterval(state.titleTicker)
+    state.titleTicker = undefined
+  }
+
+  const restoreSessionTitle = async (sessionID: string) => {
+    const state = stateBySession.get(sessionID)
+    if (!state?.originalTitle) return
+    await setSessionTitle(sessionID, state.originalTitle)
+  }
+
+  const startSessionTitleTicker = async (sessionID: string) => {
+    const state = stateBySession.get(sessionID)
+    if (!state) return
+
+    stopSessionTitleTicker(sessionID)
+
+    const originalTitle = await getSessionTitle(sessionID)
+    if (!originalTitle) return
+    state.originalTitle = originalTitle
+
+    const updateTitle = async () => {
+      const current = stateBySession.get(sessionID)
+      if (!current) return
+
+      const remainingMs = current.deadlineAt - Date.now()
+      if (remainingMs <= 0) {
+        stopSessionTitleTicker(sessionID)
+        await restoreSessionTitle(sessionID)
+        return
+      }
+
+      const countdown = formatRemaining(remainingMs)
+      await setSessionTitle(sessionID, `${current.originalTitle} [${countdown}]`)
+    }
+
+    await updateTitle()
+    state.titleTicker = setInterval(() => {
+      void updateTitle()
+    }, 1000)
+  }
+
+  const clearAutoContinue = async (sessionID: string) => {
+    const state = stateBySession.get(sessionID)
+    if (!state) return
+
+    state.stopped = true
+    stopSessionTitleTicker(sessionID)
+    stateBySession.delete(sessionID)
+
+    if (state.originalTitle) {
+      await setSessionTitle(sessionID, state.originalTitle)
+    }
+  }
 
   const startAutoContinue = async (sessionID: string, args: string) => {
     const parsed = parseDurationToMs(args ?? "")
@@ -104,10 +212,14 @@ export const Autocontinue: Plugin = async ({ client }) => {
           title: "autocontinue",
           message: "時間指定を解釈できませんでした。例: /autocontinue 30s",
           variant: "warning",
-          duration: 3000,
+          duration: 500,
         },
       })
       return
+    }
+
+    if (stateBySession.has(sessionID)) {
+      await clearAutoContinue(sessionID)
     }
 
     const now = Date.now()
@@ -115,14 +227,17 @@ export const Autocontinue: Plugin = async ({ client }) => {
       deadlineAt: now + parsed,
       durationMs: parsed,
       sending: false,
+      stopped: false,
     })
+
+    await startSessionTitleTicker(sessionID)
 
     await client.tui.showToast({
       body: {
         title: "autocontinue observed",
         message: `${formatDuration(parsed)}の間、自動で「${CONTINUE_TEXT}」を送信します。`,
         variant: "success",
-        duration: 3500,
+        duration: 500,
       },
     })
   }
@@ -165,26 +280,26 @@ export const Autocontinue: Plugin = async ({ client }) => {
           const state = stateBySession.get(sessionID)
           if (!state) return
 
-          stateBySession.delete(sessionID)
+          await clearAutoContinue(sessionID)
           await client.tui.showToast({
             body: {
               title: "autocontinue stopped",
               message: `セッション中断を検知したため自動継続を停止しました（${formatDuration(state.durationMs)}）。`,
               variant: "info",
-              duration: 2500,
+              duration: 500,
             },
           })
           return
         }
 
         for (const [activeSessionID, state] of stateBySession) {
-          stateBySession.delete(activeSessionID)
+          await clearAutoContinue(activeSessionID)
           await client.tui.showToast({
             body: {
               title: "autocontinue stopped",
               message: `セッション中断を検知したため自動継続を停止しました（${formatDuration(state.durationMs)}）。`,
               variant: "info",
-              duration: 2500,
+              duration: 500,
             },
           })
         }
@@ -195,13 +310,13 @@ export const Autocontinue: Plugin = async ({ client }) => {
         if (event.properties.command !== "session.interrupt") return
 
         for (const [sessionID, state] of stateBySession) {
-          stateBySession.delete(sessionID)
+          await clearAutoContinue(sessionID)
           await client.tui.showToast({
             body: {
               title: "autocontinue stopped",
               message: `割り込み操作を検知したため自動継続を停止しました（${formatDuration(state.durationMs)}）。`,
               variant: "info",
-              duration: 2500,
+              duration: 500,
             },
           })
         }
@@ -213,24 +328,27 @@ export const Autocontinue: Plugin = async ({ client }) => {
       const { sessionID } = event.properties
       const state = stateBySession.get(sessionID)
       if (!state) return
+      if (state.stopped) return
 
       if (Date.now() > state.deadlineAt) {
-        stateBySession.delete(sessionID)
+        await clearAutoContinue(sessionID)
         await client.tui.showToast({
           body: {
             title: "autocontinue finished",
             message: `自動継続を停止しました（${formatDuration(state.durationMs)} 経過）。`,
             variant: "info",
-            duration: 2500,
+            duration: 500,
           },
         })
         return
       }
 
-      if (state.sending) return
+      if (state.sending || state.stopped) return
       state.sending = true
 
       try {
+        if (state.stopped || stateBySession.get(sessionID) !== state) return
+
         await client.session.promptAsync({
           path: { id: sessionID },
           body: {
@@ -243,18 +361,18 @@ export const Autocontinue: Plugin = async ({ client }) => {
           },
         })
       } catch {
-        stateBySession.delete(sessionID)
+        await clearAutoContinue(sessionID)
         await client.tui.showToast({
           body: {
             title: "autocontinue error",
             message: "自動送信に失敗したため停止しました。",
             variant: "error",
-            duration: 3000,
+            duration: 500,
           },
         })
       } finally {
         const next = stateBySession.get(sessionID)
-        if (next) next.sending = false
+        if (next === state) next.sending = false
       }
     },
   }

@@ -29,13 +29,7 @@ Add this plugin and command configuration in your `opencode.json`:
 
 ```json
 {
-  "plugin": ["autocontinue"],
-  "command": {
-    "autocontinue": {
-      "description": "Auto-send つづけて for a duration",
-      "template": "This /autocontinue command is handled by a plugin. Reply with exactly: 自動継続を設定しました。"
-    }
-  }
+  "plugin": ["autocontinue"]
 }
 ```
 

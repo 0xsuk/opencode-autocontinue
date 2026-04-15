@@ -9,6 +9,10 @@ type AutoContinueState = {
 const COMMAND_NAME = "autocontinue"
 const CONTINUE_TEXT = "つづけて"
 
+function isAutoContinueCommand(command: string): boolean {
+  return command === COMMAND_NAME || command === `/${COMMAND_NAME}`
+}
+
 const UNIT_TO_MS: Record<string, number> = {
   ms: 1,
   s: 1000,
@@ -105,7 +109,7 @@ export const Autocontinue: Plugin = async ({ client }) => {
 
   return {
     "command.execute.before": async (input, output) => {
-      if (input.command !== COMMAND_NAME) return
+      if (!isAutoContinueCommand(input.command)) return
       output.parts = []
       await startAutoContinue(input.sessionID, input.arguments)
     },

@@ -62,6 +62,30 @@ function parseDurationToMs(raw: string): number | null {
   return null
 }
 
+function splitDurationAndRemainder(raw: string): { durationMs: number; remainder: string } | null {
+  const input = raw.trim()
+  if (!input) return null
+
+  const tokenPattern = "(?:ms|s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)"
+  const durationPrefix = new RegExp(`^\\s*((?:\\d+(?:\\.\\d+)?\\s*${tokenPattern}\\s*)+)(.*)$`, "i")
+  const matched = input.match(durationPrefix)
+  if (matched) {
+    const durationPart = matched[1].trim()
+    const remainder = (matched[2] ?? "").trim()
+    const durationMs = parseDurationToMs(durationPart)
+    if (durationMs) return { durationMs, remainder }
+  }
+
+  const numericPrefix = input.match(/^\s*(\d+)(?:\s+(.*))?$/)
+  if (numericPrefix) {
+    const durationMs = Number(numericPrefix[1]) * 60_000
+    const remainder = (numericPrefix[2] ?? "").trim()
+    if (durationMs > 0) return { durationMs, remainder }
+  }
+
+  return null
+}
+
 function formatDuration(durationMs: number): string {
   if (durationMs % 3_600_000 === 0) return `${durationMs / 3_600_000}h`
   if (durationMs % 60_000 === 0) return `${durationMs / 60_000}min`
@@ -107,9 +131,10 @@ export const Autocontinue: Plugin = async ({ client }) => {
     "command.execute.before": async (input, output) => {
       if (input.command !== COMMAND_NAME) return
 
-      const parsed = parseDurationToMs(input.arguments ?? "")
+      const parsed = splitDurationAndRemainder(input.arguments ?? "")
       if (parsed) {
-        const text = `${formatDuration(parsed)}稼働しつづけて`
+        const baseText = `${formatDuration(parsed.durationMs)}稼働しつづけて`
+        const text = parsed.remainder ? `${baseText} ${parsed.remainder}` : baseText
         if (output.parts.length > 0 && output.parts[0]?.type === "text") {
           ;(output.parts[0] as { text?: string }).text = text
           output.parts = output.parts.slice(0, 1)
@@ -124,21 +149,59 @@ export const Autocontinue: Plugin = async ({ client }) => {
     },
 
     event: async ({ event }) => {
-      if (event.type === "message.updated") {
-        const info = event.properties.info
-        if (info.role === "user") {
-          const state = stateBySession.get(info.sessionID)
-          if (state) {
-            stateBySession.delete(info.sessionID)
-            await client.tui.showToast({
-              body: {
-                title: "autocontinue stopped",
-                message: "ユーザー割り込みを検知したため自動継続を停止しました。",
-                variant: "info",
-                duration: 2500,
-              },
-            })
-          }
+      if (event.type === "session.error") {
+        const err = event.properties.error
+        if (!err) return
+
+        const isInterruptLike =
+          err.name === "MessageAbortedError" ||
+          (err.name === "APIError" && /abort|cancel|interrupt|stopped/i.test(err.data?.message ?? ""))
+        if (!isInterruptLike) return
+
+        const sessionID = event.properties.sessionID
+        if (sessionID) {
+          const state = stateBySession.get(sessionID)
+          if (!state) return
+
+          stateBySession.delete(sessionID)
+          await client.tui.showToast({
+            body: {
+              title: "autocontinue stopped",
+              message: `セッション中断を検知したため自動継続を停止しました（${formatDuration(state.durationMs)}）。`,
+              variant: "info",
+              duration: 2500,
+            },
+          })
+          return
+        }
+
+        for (const [activeSessionID, state] of stateBySession) {
+          stateBySession.delete(activeSessionID)
+          await client.tui.showToast({
+            body: {
+              title: "autocontinue stopped",
+              message: `セッション中断を検知したため自動継続を停止しました（${formatDuration(state.durationMs)}）。`,
+              variant: "info",
+              duration: 2500,
+            },
+          })
+        }
+        return
+      }
+
+      if (event.type === "tui.command.execute") {
+        if (event.properties.command !== "session.interrupt") return
+
+        for (const [sessionID, state] of stateBySession) {
+          stateBySession.delete(sessionID)
+          await client.tui.showToast({
+            body: {
+              title: "autocontinue stopped",
+              message: `割り込み操作を検知したため自動継続を停止しました（${formatDuration(state.durationMs)}）。`,
+              variant: "info",
+              duration: 2500,
+            },
+          })
         }
         return
       }

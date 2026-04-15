@@ -15,6 +15,7 @@
       "template": " "
     }
   },
+  "model": "github-copilot/gpt-5.3-codex",
   "permission": {
     "websearch": "allow"
   },

@@ -120,7 +120,7 @@ export const Autocontinue: Plugin = async ({ client }) => {
     await client.tui.showToast({
       body: {
         title: "autocontinue observed",
-        message: `/autocontinue ${args} を観測。${formatDuration(parsed)} の間、自動で「${CONTINUE_TEXT}」を送信します。`,
+        message: `${formatDuration(parsed)}の間、自動で「${CONTINUE_TEXT}」を送信します。`,
         variant: "success",
         duration: 3500,
       },
@@ -133,21 +133,9 @@ export const Autocontinue: Plugin = async ({ client }) => {
 
       const parsed = splitDurationAndRemainder(input.arguments ?? "")
       if (parsed) {
-        const baseText = `${formatDuration(parsed.durationMs)}稼働しつづけて`
+        const baseText = `${formatDuration(parsed.durationMs)}稼働しつづけて.`
         const commandText = parsed.remainder ? `${baseText} ${parsed.remainder}` : baseText
 
-        await client.session.promptAsync({
-          path: { id: input.sessionID },
-          body: {
-            noReply: true,
-            parts: [
-              {
-                type: "text",
-                text: commandText,
-              },
-            ],
-          },
-        })
 
         if (output.parts.length > 0 && output.parts[0]?.type === "text") {
           ;(output.parts[0] as { text?: string }).text = commandText

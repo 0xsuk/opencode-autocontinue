@@ -106,11 +106,43 @@ export const Autocontinue: Plugin = async ({ client }) => {
   return {
     "command.execute.before": async (input, output) => {
       if (input.command !== COMMAND_NAME) return
-      output.parts = []
+
+      const parsed = parseDurationToMs(input.arguments ?? "")
+      if (parsed) {
+        const text = `${formatDuration(parsed)}稼働しつづけて`
+        if (output.parts.length > 0 && output.parts[0]?.type === "text") {
+          ;(output.parts[0] as { text?: string }).text = text
+          output.parts = output.parts.slice(0, 1)
+        } else {
+          output.parts = [{ type: "text", text } as never]
+        }
+      } else {
+        output.parts = []
+      }
+
       await startAutoContinue(input.sessionID, input.arguments ?? "")
     },
 
     event: async ({ event }) => {
+      if (event.type === "message.updated") {
+        const info = event.properties.info
+        if (info.role === "user") {
+          const state = stateBySession.get(info.sessionID)
+          if (state) {
+            stateBySession.delete(info.sessionID)
+            await client.tui.showToast({
+              body: {
+                title: "autocontinue stopped",
+                message: "ユーザー割り込みを検知したため自動継続を停止しました。",
+                variant: "info",
+                duration: 2500,
+              },
+            })
+          }
+        }
+        return
+      }
+
       if (event.type !== "session.idle") return
 
       const { sessionID } = event.properties
